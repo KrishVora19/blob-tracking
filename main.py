@@ -70,6 +70,12 @@ def initialise(src=0, nfeatures=500, num_points=5):
 
     return cap, orb, lk_params, prev_grey, initial_kps, prev_pts
 
+def back_off(new_pt, tracked_points, min_dist=50):
+    for tp in tracked_points:
+        if np.linalg.norm(new_pt - tp.pos) < min_dist:
+            return False
+    return True
+
 def select_initial_point(grey, orb):
     '''
     Detect the intial keypoint using the result from the orb feature detector.
@@ -89,8 +95,7 @@ def select_initial_point(grey, orb):
     x, y = initial_kps[0].pt
     return np.array([[x, y]], dtype=np.float32).reshape(-1, 1, 2)
 
-
-def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_dim=40, jitter=5, neighbors=2):
+def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_dim=40, jitter=3, box_fluctuation=0.05, neighbors=2):
     """
     Track multiple ORB keypoints with Lucas-Kanade optical flow,
     draw jittered rectangles, and connect nearest neighbors with lines.
@@ -119,7 +124,6 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
 
     # Initialize tracked points with the strongest keypoints
     tracked_points = [TrackedPoint(kp.pt, life=200, box_dim=box_dim) for kp in sorted(initial_kps, key=lambda k: k.response, reverse=True)[:num_points]]
-    print(tracked_points)
 
     while True:
         ret, frame = cap.read()
@@ -147,7 +151,11 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
             if kps:
                 kps = sorted(kps, key=lambda k: k.response, reverse=True)
                 for kp in kps[:num_points - len(tracked_points)]:
-                    tracked_points.append(TrackedPoint(kp.pt, life=200, box_dim=box_dim))
+                    if len(tracked_points) >= num_points:
+                        break
+                    pt = np.array(kp.pt)
+                    if back_off(pt, tracked_points):
+                        tracked_points.append(TrackedPoint(kp.pt, life=200, box_dim=box_dim))
 
         coords = np.array([p.pos for p in tracked_points], dtype=np.float32)
 
@@ -165,13 +173,15 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
             jx = np.random.randint(-jitter, jitter+1)
             jy = np.random.randint(-jitter, jitter+1)
 
-            tl = (int(x - tp.box_dim//2) + jx, int(y - tp.box_dim//2) + jy)
-            br = (int(x + tp.box_dim//2) + jx, int(y + tp.box_dim//2) + jy)
+            x_multiplier = np.random.uniform(1-box_fluctuation, 1+box_fluctuation)
+            y_multiplier = np.random.uniform(1-box_fluctuation, 1+box_fluctuation)
+
+            tl = (int((x - tp.box_dim//2)*x_multiplier) + jx, int((y - tp.box_dim//2)*y_multiplier) + jy)
+            br = (int((x + tp.box_dim//2)*x_multiplier) + jx, int((y + tp.box_dim//2)*y_multiplier) + jy)
 
             # Clip to frame
             tl = (max(tl[0],0), max(tl[1],0))
             br = (min(br[0], frame.shape[1]-1), min(br[1], frame.shape[0]-1))
-
 
             # Draw rectangle
             cv2.rectangle(frame, tl, br, (255,255,255), 2)
@@ -197,6 +207,7 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
                 mean_brightness = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).mean()
                 color = (0,0,0) if mean_brightness > 127 else (255,255,255)
             else:
+                text = f"({int(x)},{int(y)})"
                 color = (0,0,0)
             (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
