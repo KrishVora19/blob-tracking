@@ -12,7 +12,7 @@ class TrackedPoint:
         self.box_dim = box_dim
 
 #HELPER FUNCTIONS
-def initialise(src=0, nfeatures=500, num_points=5):
+def initialise(src=0, nfeatures=5000, num_points=30):
     """
     Initialise video capture, ORB detector, and Lucas-Kanade optical flow for tracking.
 
@@ -70,7 +70,7 @@ def initialise(src=0, nfeatures=500, num_points=5):
 
     return cap, orb, lk_params, prev_grey, initial_kps, prev_pts
 
-def back_off(new_pt, tracked_points, min_dist=50):
+def back_off(new_pt, tracked_points, min_dist=100):
     for tp in tracked_points:
         if np.linalg.norm(new_pt - tp.pos) < min_dist:
             return False
@@ -95,7 +95,29 @@ def select_initial_point(grey, orb):
     x, y = initial_kps[0].pt
     return np.array([[x, y]], dtype=np.float32).reshape(-1, 1, 2)
 
-def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_dim=40, jitter=3, box_fluctuation=0.05, neighbors=2):
+def gameboy_greenscale(roi):
+
+    # Luminance
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+    # 4-shade palette
+    levels = 4
+    quantized = np.floor(gray / (256 / levels)) * (256 / (levels - 1))
+    quantized = quantized.astype(np.uint8)
+
+    # Mapping grey to green
+    palette = np.array([
+        [15, 56, 15],    # Dark green
+        [48, 98, 48],    # Medium dark
+        [139, 172, 15],  # Medium light
+        [155, 188, 15]   # Light green
+    ], dtype=np.uint8)
+    indices = (quantized / (256 / (levels - 1))).astype(int)
+    green_img = palette[indices]
+
+    return green_img
+
+def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=30, box_dim=40, jitter=3, box_fluctuation=0.05, neighbors=2):
     """
     Track multiple ORB keypoints with Lucas-Kanade optical flow,
     draw jittered rectangles, and connect nearest neighbors with lines.
@@ -194,6 +216,7 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
             # Pick contrasting color based on box brightness
             roi = frame[tl[1]:br[1], tl[0]:br[0]]
             if roi.size:
+                inverted_roi = cv2.bitwise_not(roi)
                 text_content = np.random.rand() < 0.5
                 if text_content:
                     text = f"({int(x)},{int(y)})"
@@ -202,8 +225,13 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
                     avg_color_int = tuple(int(np.clip(c, 0, 255)) for c in avg_color)
                     # avg_color is BGR; convert to RGB hex
                     text = "#{:02x}{:02x}{:02x}".format(avg_color_int[2], avg_color_int[1], avg_color_int[0])
-                inverted_roi = cv2.bitwise_not(roi)
-                frame[tl[1]:br[1], tl[0]:br[0]] = inverted_roi
+                
+                box_color_fill = np.random.rand() < 0.3
+
+                if box_color_fill:
+                    frame[tl[1]:br[1], tl[0]:br[0]] = inverted_roi
+                else:
+                    frame[tl[1]:br[1], tl[0]:br[0]] =  gameboy_greenscale(roi)
                 mean_brightness = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).mean()
                 color = (0,0,0) if mean_brightness > 127 else (255,255,255)
             else:
