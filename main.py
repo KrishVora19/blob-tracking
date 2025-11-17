@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
 
+#INITIALISION
+np.random.seed(19)
+
 #CLASSES
 class TrackedPoint:
     def __init__(self, pos, life=100, box_dim=40):
@@ -116,6 +119,7 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
 
     # Initialize tracked points with the strongest keypoints
     tracked_points = [TrackedPoint(kp.pt, life=200, box_dim=box_dim) for kp in sorted(initial_kps, key=lambda k: k.response, reverse=True)[:num_points]]
+    print(tracked_points)
 
     while True:
         ret, frame = cap.read()
@@ -168,14 +172,32 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
             tl = (max(tl[0],0), max(tl[1],0))
             br = (min(br[0], frame.shape[1]-1), min(br[1], frame.shape[0]-1))
 
+
             # Draw rectangle
             cv2.rectangle(frame, tl, br, (255,255,255), 2)
 
             # Optional: draw coordinates as label
-            text = f"({int(x)},{int(y)})"
             font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = max(tp.box_dim / 50, 0.5)
-            thickness = max(tp.box_dim // 50, 1)
+            font_scale = 0.5
+            thickness = 1
+
+            # Pick contrasting color based on box brightness
+            roi = frame[tl[1]:br[1], tl[0]:br[0]]
+            if roi.size:
+                text_content = np.random.rand() < 0.5
+                if text_content:
+                    text = f"({int(x)},{int(y)})"
+                else:
+                    avg_color = np.mean(roi, axis=(0,1))
+                    avg_color_int = tuple(int(np.clip(c, 0, 255)) for c in avg_color)
+                    # avg_color is BGR; convert to RGB hex
+                    text = "#{:02x}{:02x}{:02x}".format(avg_color_int[2], avg_color_int[1], avg_color_int[0])
+                inverted_roi = cv2.bitwise_not(roi)
+                frame[tl[1]:br[1], tl[0]:br[0]] = inverted_roi
+                mean_brightness = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).mean()
+                color = (0,0,0) if mean_brightness > 127 else (255,255,255)
+            else:
+                color = (0,0,0)
             (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
             text_x = tl[0] + max((br[0] - tl[0] - text_w)//2, 0)
@@ -184,16 +206,7 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=5, box_di
             text_y = min(text_y, br[1]-baseline)
             text_x = min(text_x, br[0]-text_w)
 
-            # Pick contrasting color based on box brightness
-            roi = frame[tl[1]:br[1], tl[0]:br[0]]
-            if roi.size:
-                mean_brightness = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).mean()
-                color = (0,0,0) if mean_brightness > 127 else (255,255,255)
-            else:
-                color = (0,0,0)
-
             # Draw text with outline
-            cv2.putText(frame, text, (text_x+1, text_y+1), font, font_scale, (0,0,0), thickness+2, cv2.LINE_AA)
             cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness, cv2.LINE_AA)
 
         # Show frame
