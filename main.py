@@ -12,7 +12,7 @@ class TrackedPoint:
         self.box_dim = box_dim
 
 #HELPER FUNCTIONS
-def initialise(src=0, nfeatures=5000, num_points=30):
+def initialise(src=0, nfeatures=5000, num_points=10):
     """
     Initialise video capture, ORB detector, and Lucas-Kanade optical flow for tracking.
 
@@ -117,35 +117,17 @@ def gameboy_greenscale(roi):
 
     return green_img
 
-def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=30, box_dim=40, jitter=3, box_fluctuation=0.05, neighbors=2):
-    """
-    Track multiple ORB keypoints with Lucas-Kanade optical flow,
-    draw jittered rectangles, and connect nearest neighbors with lines.
+def draw_motion_vectors(frame, prev_pts, next_pts, color=(0,0,255)):
+    for (x1,y1),(x2,y2) in zip(prev_pts.reshape(-1,2),next_pts.reshape(-1,2)):
+        starting_point = (int(x1),int(y1))
+        ending_point = (int(x2),int(y2))
 
-    Parameters
-    ----------
-    cap : cv2.VideoCapture
-        OpenCV video capture object.
-    orb : cv2.ORB
-        ORB feature detector.
-    lk_params : dict
-        Lucas-Kanade optical flow parameters.
-    prev_grey : np.ndarray
-        Initial grayscale frame.
-    initial_kps : list
-        Initial ORB keypoints to track.
-    num_points : int
-        Maximum number of points to track.
-    box_dim : int
-        Side length of rectangles.
-    jitter : int
-        Maximum pixel jitter for boxes.
-    neighbors : int
-        Number of nearest neighbors to connect lines.
-    """
+        cv2.arrowedLine(frame, starting_point, ending_point, color, thickness=1, tipLength=1)
 
-    # Initialize tracked points with the strongest keypoints
-    tracked_points = [TrackedPoint(kp.pt, life=200, box_dim=box_dim) for kp in sorted(initial_kps, key=lambda k: k.response, reverse=True)[:num_points]]
+def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=10, box_dim=40, jitter=1, box_fluctuation=0.05, neighbors=2):
+    # Initialize
+    tracked_points = [TrackedPoint(kp.pt, life=200, box_dim=box_dim)
+                      for kp in sorted(initial_kps, key=lambda k: k.response, reverse=True)[:num_points]]
 
     while True:
         ret, frame = cap.read()
@@ -153,43 +135,74 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=30, box_d
             break
         grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Track existing points
+        prev_pts = None
+        next_pts = None
+        status = None
+
+        # Track existing points if any
         if tracked_points:
-            prev_pts = np.array([p.pos for p in tracked_points], dtype=np.float32).reshape(-1,1,2)
+            prev_pts = np.array([p.pos for p in tracked_points], dtype=np.float32).reshape(-1, 1, 2)
             next_pts, status, _ = cv2.calcOpticalFlowPyrLK(prev_grey, grey, prev_pts, None, **lk_params)
 
-            new_tracked = []
-            for tp, np_pt, st in zip(tracked_points, next_pts.reshape(-1,2), status.reshape(-1)):
-                if st == 1:  # successfully tracked
-                    tp.pos = np_pt
-                    tp.life -= 1
-                    if tp.life > 0:
-                        new_tracked.append(tp)
-            tracked_points = new_tracked
+            # If LK returned something, filter for successful tracks
+            if status is not None:
+                st = status.reshape(-1)
+                # update tracked_points list using status
+                new_tracked = []
+                for tp, np_pt, s in zip(tracked_points, next_pts.reshape(-1, 2), st):
+                    if s == 1:
+                        tp.pos = np_pt
+                        tp.life -= 1
+                        if tp.life > 0:
+                            new_tracked.append(tp)
+                tracked_points = new_tracked
+            else:
+                # no valid status -> clear tracked points
+                tracked_points = []
 
-        # Spawn new points if less than num_points
+        # Draw motion vectors only if we have valid prev/next and status
+        if prev_pts is not None and next_pts is not None and status is not None:
+            good_mask = (status.reshape(-1) == 1)
+            if good_mask.any():
+                good_prev = prev_pts.reshape(-1, 2)[good_mask]    # shape (M,2)
+                good_next = next_pts.reshape(-1, 2)[good_mask]    # shape (M,2)
+                # pass arrays shaped (M,2) or (M,1,2) both supported
+                draw_motion_vectors(frame, good_prev, good_next)
+
+        # Spawn new points if need be (same logic as yours)
         if len(tracked_points) < num_points:
             kps = orb.detect(grey, None)
             if kps:
                 kps = sorted(kps, key=lambda k: k.response, reverse=True)
-                for kp in kps[:num_points - len(tracked_points)]:
+                for kp in kps:
                     if len(tracked_points) >= num_points:
                         break
                     pt = np.array(kp.pt)
                     if back_off(pt, tracked_points):
                         tracked_points.append(TrackedPoint(kp.pt, life=200, box_dim=box_dim))
 
-        coords = np.array([p.pos for p in tracked_points], dtype=np.float32)
+        coords = np.array([p.pos for p in tracked_points], dtype=np.float32) if tracked_points else np.empty((0,2), dtype=np.float32)
 
         # Draw lines to nearest neighbors
-        for i, p in enumerate(coords):
-            if len(coords) > 1:
+        if len(coords) > 1:
+            for i, p in enumerate(coords):
                 dists = np.linalg.norm(coords - p, axis=1)
                 nearest_idx = np.argsort(dists)[1:neighbors+1]
-                for j in nearest_idx:
-                    cv2.line(frame, tuple(p.astype(int)), tuple(coords[j].astype(int)), (255,255,255), 1)
 
-        # Draw jittered boxes and labels
+
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                thickness = 1
+                line_text_color = (255,255,255)
+
+                for j in nearest_idx:
+                    p1 = tuple(p.astype(int))
+                    p2 = tuple(coords[j].astype(int))
+                    cv2.line(frame, p1, p2, (255,255,255), 1)
+                    mid_x = int((p1[0] + p2[0])/2)
+                    mid_y = int((p1[1] + p2[1])/2)
+                    cv2.putText(frame, str(dists[j]),(mid_x,mid_y), font, font_scale, line_text_color, thickness, cv2.LINE_AA)
+
         for tp in tracked_points:
             x, y = tp.pos
             jx = np.random.randint(-jitter, jitter+1)
@@ -201,51 +214,38 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=30, box_d
             tl = (int((x - tp.box_dim//2)*x_multiplier) + jx, int((y - tp.box_dim//2)*y_multiplier) + jy)
             br = (int((x + tp.box_dim//2)*x_multiplier) + jx, int((y + tp.box_dim//2)*y_multiplier) + jy)
 
-            # Clip to frame
-            tl = (max(tl[0],0), max(tl[1],0))
-            br = (min(br[0], frame.shape[1]-1), min(br[1], frame.shape[0]-1))
+            # Clip to frame and ensure ordering
+            tl = (max(0, min(tl[0], br[0])), max(0, min(tl[1], br[1])))
+            br = (max(tl[0], min(br[0], frame.shape[1]-1)), max(tl[1], min(br[1], frame.shape[0]-1)))
 
-            # Draw rectangle
+            roi = frame[tl[1]:br[1], tl[0]:br[0]]
+            if roi.size:
+                if np.random.rand() < 0.3:
+                    frame[tl[1]:br[1], tl[0]:br[0]] = cv2.bitwise_not(roi)
+                else:
+                    frame[tl[1]:br[1], tl[0]:br[0]] = gameboy_greenscale(roi)
+
             cv2.rectangle(frame, tl, br, (255,255,255), 2)
 
-            # Optional: draw coordinates as label
+            # label
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.5
             thickness = 1
-
-            # Pick contrasting color based on box brightness
-            roi = frame[tl[1]:br[1], tl[0]:br[0]]
-            if roi.size:
-                inverted_roi = cv2.bitwise_not(roi)
-                text_content = np.random.rand() < 0.5
-                if text_content:
-                    text = f"({int(x)},{int(y)})"
-                else:
-                    avg_color = np.mean(roi, axis=(0,1))
-                    avg_color_int = tuple(int(np.clip(c, 0, 255)) for c in avg_color)
-                    # avg_color is BGR; convert to RGB hex
-                    text = "#{:02x}{:02x}{:02x}".format(avg_color_int[2], avg_color_int[1], avg_color_int[0])
-                
-                box_color_fill = np.random.rand() < 0.3
-
-                if box_color_fill:
-                    frame[tl[1]:br[1], tl[0]:br[0]] = inverted_roi
-                else:
-                    frame[tl[1]:br[1], tl[0]:br[0]] =  gameboy_greenscale(roi)
-                mean_brightness = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).mean()
-                color = (0,0,0) if mean_brightness > 127 else (255,255,255)
-            else:
-                text = f"({int(x)},{int(y)})"
-                color = (0,0,0)
+            text = f"({int(x)},{int(y)})"
             (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-
             text_x = tl[0] + max((br[0] - tl[0] - text_w)//2, 0)
             text_y = tl[1] + (br[1] - tl[1] + text_h)//2
             text_y = max(text_y, tl[1]+text_h)
             text_y = min(text_y, br[1]-baseline)
             text_x = min(text_x, br[0]-text_w)
 
-            # Draw text with outline
+            # contrast color
+            if roi.size:
+                mean_brightness = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).mean()
+                color = (0,0,0) if mean_brightness > 127 else (255,255,255)
+            else:
+                color = (0,0,0)
+
             cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness, cv2.LINE_AA)
 
         # Show frame
@@ -254,13 +254,12 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=30, box_d
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-
-
+#MAIN LOOP
 def main():
     cap = None
     try:
         cap, orb, lk_params, prev_grey, initial_kps, prev_pts = initialise()
-        track_loop(cap, orb, lk_params, prev_grey, initial_kps)  # Use initial_kps not prev_pts
+        track_loop(cap, orb, lk_params, prev_grey, initial_kps)
     finally:
         if cap is not None:
             cap.release()
