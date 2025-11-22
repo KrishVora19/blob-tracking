@@ -1,15 +1,57 @@
 import cv2
 import numpy as np
+from typing import Tuple
 
 #INITIALISION
 np.random.seed(19)
 
 #CLASSES
 class TrackedPoint:
-    def __init__(self, pos, life=100, box_dim=40):
+    def __init__(
+            self,
+            pos,
+            life=100,
+            box_dim=40
+            ):
+        
         self.pos = np.array(pos, dtype=np.float32)  # x, y coordinates
         self.life = life  # frames remaining
         self.box_dim = box_dim
+
+class LabelStyle:
+    def __init__(
+            self,
+            font=cv2.FONT_HERSHEY_SIMPLEX,
+            scale:float=0.5,
+            thickness:float=1,
+            color: Tuple[int, int, int]=(255,255,255)
+            ):
+        self.font = font
+        self.font_scale = scale
+        self.font_thickness = thickness
+        self.color = color
+
+    def draw(self, frame, text, pos):
+        cv2.putText(
+            frame,
+            text,
+            pos,
+            self.font,
+            self.font_scale,
+            self.color,
+            self.font_thickness,
+            cv2.LINE_AA
+        )
+    
+    def get_size(self,text):
+        (w,h), baseline = cv2.getTextSize(
+            text,
+            self.font,
+            self.font_scale,
+            self.font_thickness
+        )
+        return (w,h),baseline
+    
 
 #HELPER FUNCTIONS
 def initialise(src=0, nfeatures=5000, num_points=10):
@@ -126,9 +168,9 @@ def draw_motion_vectors(frame, prev_pts, next_pts, color=(0,0,255)):
 
 def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=10, box_dim=40, jitter=1, box_fluctuation=0.05, neighbors=2):
     # Initialize
-    tracked_points = [TrackedPoint(kp.pt, life=200, box_dim=box_dim)
-                      for kp in sorted(initial_kps, key=lambda k: k.response, reverse=True)[:num_points]]
-
+    tracked_points = [TrackedPoint(kp.pt, life=100, box_dim=box_dim)
+                    for kp in sorted(initial_kps, key=lambda k: k.response, reverse=True)[:num_points]]
+    style = LabelStyle(scale=0.5,thickness=1,color=(255,255,255))
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -169,7 +211,7 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=10, box_d
                 # pass arrays shaped (M,2) or (M,1,2) both supported
                 draw_motion_vectors(frame, good_prev, good_next)
 
-        # Spawn new points if need be (same logic as yours)
+        # Spawn new points if needed
         if len(tracked_points) < num_points:
             kps = orb.detect(grey, None)
             if kps:
@@ -189,19 +231,14 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=10, box_d
                 dists = np.linalg.norm(coords - p, axis=1)
                 nearest_idx = np.argsort(dists)[1:neighbors+1]
 
-
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.5
-                thickness = 1
-                line_text_color = (255,255,255)
-
+                
                 for j in nearest_idx:
                     p1 = tuple(p.astype(int))
                     p2 = tuple(coords[j].astype(int))
                     cv2.line(frame, p1, p2, (255,255,255), 1)
                     mid_x = int((p1[0] + p2[0])/2)
                     mid_y = int((p1[1] + p2[1])/2)
-                    cv2.putText(frame, str(dists[j]),(mid_x,mid_y), font, font_scale, line_text_color, thickness, cv2.LINE_AA)
+                    style.draw(frame,(str(dists[j])),(mid_x,mid_y))
 
         for tp in tracked_points:
             x, y = tp.pos
@@ -228,11 +265,8 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=10, box_d
             cv2.rectangle(frame, tl, br, (255,255,255), 2)
 
             # label
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.5
-            thickness = 1
             text = f"({int(x)},{int(y)})"
-            (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+            (text_w, text_h), baseline = style.get_size(text)
             text_x = tl[0] + max((br[0] - tl[0] - text_w)//2, 0)
             text_y = tl[1] + (br[1] - tl[1] + text_h)//2
             text_y = max(text_y, tl[1]+text_h)
@@ -245,8 +279,7 @@ def track_loop(cap, orb, lk_params, prev_grey, initial_kps, num_points=10, box_d
                 color = (0,0,0) if mean_brightness > 127 else (255,255,255)
             else:
                 color = (0,0,0)
-
-            cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness, cv2.LINE_AA)
+            style.draw(frame,text,(text_x,text_y))
 
         # Show frame
         cv2.imshow("multi-track", frame)
